@@ -3,13 +3,17 @@ name: Unpack BL3 Pak
 on:
   workflow_dispatch:
     inputs:
-      pak_url:
-        description: 'Direct download URL of the .pak file'
+      pak_parts:
+        description: 'Comma-separated list of part URLs (single URL if not chunked)'
         required: true
       pak_name:
         description: 'Original name of the pak file'
         required: true
         default: 'pakchunk89-WindowsNoEditor.pak'
+      expected_size:
+        description: 'Expected total size in bytes (for integrity check)'
+        required: false
+        default: '0'
       aes_key:
         description: 'AES decryption key'
         required: false
@@ -30,11 +34,44 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download the .pak file
+      - name: Download the .pak parts
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "${{ github.event.inputs.pak_url }}" -OutFile "input.pak" -UseBasicParsing
-          Write-Host "Downloaded: $((Get-Item input.pak).Length / 1MB) MB"
+          $parts = "${{ github.event.inputs.pak_parts }}" -split ","
+          New-Item -ItemType Directory -Force -Path "parts" | Out-Null
+          $i = 0
+          foreach ($url in $parts) {
+              $url = $url.Trim()
+              if (-not $url) { continue }
+              $out = "parts\part_{0:D3}.bin" -f $i
+              Write-Host "Downloading part $i : $url"
+              Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+              $sz = (Get-Item $out).Length
+              Write-Host ("  -> {0:N0} bytes" -f $sz)
+              $i++
+          }
+          Write-Host "Downloaded $i part(s)."
+
+      - name: Reassemble input.pak
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "parts\part_*.bin" | Sort-Object Name
+          if ($files.Count -eq 0) { throw "No parts found to reassemble" }
+          $outStream = [System.IO.File]::Create("input.pak")
+          try {
+              foreach ($f in $files) {
+                  Write-Host "Appending $($f.Name) ..."
+                  $inStream = [System.IO.File]::OpenRead($f.FullName)
+                  try { $inStream.CopyTo($outStream) } finally { $inStream.Close() }
+              }
+          } finally { $outStream.Close() }
+          $actual = (Get-Item "input.pak").Length
+          Write-Host ("Reassembled: {0:N0} bytes" -f $actual)
+          $expected = [long]"${{ github.event.inputs.expected_size }}"
+          if ($expected -gt 0 -and $actual -ne $expected) {
+              throw "Size mismatch: expected $expected, got $actual"
+          }
+          if ($expected -gt 0) { Write-Host "Size check passed." }
 
       - name: Download repak (Standalone Rust UE Pak tool)
         shell: pwsh

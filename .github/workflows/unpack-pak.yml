@@ -36,24 +36,40 @@ jobs:
           Invoke-WebRequest -Uri "${{ github.event.inputs.pak_url }}" -OutFile "input.pak" -UseBasicParsing
           Write-Host "Downloaded: $((Get-Item input.pak).Length / 1MB) MB"
 
-      - name: Download standalone UnrealPak.exe
+      - name: Download repak (Standalone Rust UE Pak tool)
         shell: pwsh
         run: |
-          $zipUrl = "https://github.com/Dmgvol/UE_Modding/raw/main/Tools/UnrealPak.zip"
-          Invoke-WebRequest -Uri $zipUrl -OutFile "UnrealPak.zip" -UseBasicParsing
-          Expand-Archive -Path "UnrealPak.zip" -DestinationPath "UnrealPak" -Force
-          $exe = Get-ChildItem -Path "UnrealPak" -Filter "UnrealPak.exe" -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "UnrealPak.exe not found" }
-          echo "UNREALPAK_PATH=$($exe.FullName)" >> $env:GITHUB_ENV
-          Write-Host "UnrealPak at: $($exe.FullName)"
+          $latestUrl = "https://github.com/trumank/repak/releases/latest/download/repak_cli-x86_64-pc-windows-msvc.zip"
+          $fallbackUrl = "https://github.com/trumank/repak/releases/download/v0.2.3/repak_cli-x86_64-pc-windows-msvc.zip"
+          try {
+              Invoke-WebRequest -Uri $latestUrl -OutFile "repak.zip" -UseBasicParsing
+          } catch {
+              Write-Host "Latest release download failed, trying fallback URL..."
+              Invoke-WebRequest -Uri $fallbackUrl -OutFile "repak.zip" -UseBasicParsing
+          }
+          Expand-Archive -Path "repak.zip" -DestinationPath "repak" -Force
+          $exe = Get-ChildItem -Path "repak" -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "repak executable not found" }
+          echo "REPAK_PATH=$($exe.FullName)" >> $env:GITHUB_ENV
+          Write-Host "repak tool found at: $($exe.FullName)"
+
+      - name: Show repak version
+        shell: pwsh
+        run: |
+          & "$env:REPAK_PATH" --version
+          & "$env:REPAK_PATH" --help
 
       - name: Extract the pak
         shell: pwsh
         run: |
           $key = "${{ github.event.inputs.aes_key }}"
           New-Item -ItemType Directory -Force -Path "unpacked" | Out-Null
-          & "$env:UNREALPAK_PATH" "input.pak" -Extract "unpacked" -cryptokeys=$key
-          if ($LASTEXITCODE -ne 0) { throw "UnrealPak exited with code $LASTEXITCODE" }
+          if ($key) {
+              & "$env:REPAK_PATH" --aes-key "$key" unpack "input.pak" -o "unpacked"
+          } else {
+              & "$env:REPAK_PATH" unpack "input.pak" -o "unpacked"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "repak exited with code $LASTEXITCODE" }
           Write-Host "Extraction complete."
 
       - name: Zip the output

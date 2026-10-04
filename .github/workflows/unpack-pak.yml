@@ -1,0 +1,70 @@
+name: Unpack BL3 Pak
+
+on:
+  workflow_dispatch:
+    inputs:
+      pak_url:
+        description: 'Direct download URL of the .pak file'
+        required: true
+      pak_name:
+        description: 'Original name of the pak file'
+        required: true
+        default: 'pakchunk89-WindowsNoEditor.pak'
+      aes_key:
+        description: 'AES decryption key'
+        required: false
+        default: '0x115EE4F8C625C792F37A503308048E79726E512F0BF8D2AD7C4C87BC5947CBA7'
+      artifact_name:
+        description: 'Name for the output artifact'
+        required: true
+        default: 'unpacked-paks'
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the .pak file
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ github.event.inputs.pak_url }}" -OutFile "input.pak" -UseBasicParsing
+          Write-Host "Downloaded: $((Get-Item input.pak).Length / 1MB) MB"
+
+      - name: Download standalone UnrealPak.exe
+        shell: pwsh
+        run: |
+          $zipUrl = "https://github.com/Dmgvol/UE_Modding/raw/main/Tools/UnrealPak.zip"
+          Invoke-WebRequest -Uri $zipUrl -OutFile "UnrealPak.zip" -UseBasicParsing
+          Expand-Archive -Path "UnrealPak.zip" -DestinationPath "UnrealPak" -Force
+          $exe = Get-ChildItem -Path "UnrealPak" -Filter "UnrealPak.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "UnrealPak.exe not found" }
+          echo "UNREALPAK_PATH=$($exe.FullName)" >> $env:GITHUB_ENV
+          Write-Host "UnrealPak at: $($exe.FullName)"
+
+      - name: Extract the pak
+        shell: pwsh
+        run: |
+          $key = "${{ github.event.inputs.aes_key }}"
+          New-Item -ItemType Directory -Force -Path "unpacked" | Out-Null
+          & "$env:UNREALPAK_PATH" "input.pak" -Extract "unpacked" -cryptokeys=$key
+          if ($LASTEXITCODE -ne 0) { throw "UnrealPak exited with code $LASTEXITCODE" }
+          Write-Host "Extraction complete."
+
+      - name: Zip the output
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "unpacked\*" -DestinationPath "result.zip" -Force
+          Write-Host "Zipped: $((Get-Item result.zip).Length / 1MB) MB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact_name }}
+          path: result.zip
+          retention-days: 7
